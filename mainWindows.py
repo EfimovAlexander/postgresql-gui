@@ -2,8 +2,56 @@ from shlex import join
 from PySide6 import QtCore, QtWidgets, QtGui
 from main import logger, connection
 
+def list_schema():
+    list_schemas = ['Не выбрано']
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+            SELECT schema_name FROM information_schema.schemata
+                    """)
+            schemas = cursor.fetchall()
+            for s in schemas:
+                list_schemas.append(s[0])
+    except Exception as e:
+        print("Ошибка:", e)
+    return list_schemas
+def lists_tables():
+    list_table = ["Не выбрано"]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s 
+                ORDER BY table_name;
+            """, (schema,))
+            tables = cursor.fetchall()
+            for t in tables:
+                list_table.append(t[0])
+    except Exception as e:
+        print("Ошибка:", e)
+    return list_table
+def list_attributes(schema, table):
+    list_attributes = ["Не выбрано"]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s
+                    AND table_name = %s
+                """, (schema, table))
+            attributes = cursor.fetchall()
+            for a in attributes:
+                list_attributes.append(a[0])
+    except Exception as e:
+        QtWidgets.QMessageBox.critical("Ошибка", f"Не удалось получить список атрибутов:\n{e}")
+    return list_attributes
+def list_unique_attributes(schema, table):
+    pass
 
 schema = ''
+
 class MainWidget(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -63,10 +111,9 @@ class MainWidget(QtWidgets.QWidget):
         self.col_window = SetSchema()
         self.col_window.exec()
         self.setEnabledButton()  # обновляем доступность кнопок
-        print(schema)
     def openCreateData(self):
         # создаём экземпляр окна
-        self.col_window = CreateColumn()
+        self.col_window = CreateData()
         # self.col_window.show()   # немодальное окно
         self.col_window.exec() # если нужно модальное окно (блокирует родителя)
     def openDropTable(self):
@@ -80,14 +127,6 @@ class MainWidget(QtWidgets.QWidget):
     def openCreateUser(self):
         self.col_window = CreateUser()
         self.col_window.exec()
-
-class CreateColumn(QtWidgets.QDialog):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Добавить колонку")
-        self.resize(400,200)
-        self.layout = QtWidgets.QFormLayout(self)
-        self.layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
 class SetSchema(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -96,7 +135,7 @@ class SetSchema(QtWidgets.QDialog):
         self.layout = QtWidgets.QFormLayout(self)
         # Объявление объектов
         self.nameSchema = QtWidgets.QComboBox(self)
-        schemas = listSchema()
+        schemas = list_schema()
         if schemas:
             self.nameSchema.addItems(schemas)
         else:
@@ -121,6 +160,62 @@ class SetSchema(QtWidgets.QDialog):
             f"Выбрана схема {schema}."
         )
         self.accept()
+class CreateColumn(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Добавить колонку")
+        self.resize(400,200)
+        self.layout = QtWidgets.QFormLayout(self)
+        self.layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
+        self.nameColumn = QtWidgets.QLineEdit(self)
+        self.layout.addRow("Наименование колонки", self.nameColumn)
+        self.dataType = QtWidgets.QComboBox(self)
+        self.dataType.addItems(
+            ["VARCHAR", "DATE", "INT", "FLOAT", "INTEGER", "TEXT", "BOOLEAN", "DECIMAL", "TIME", "DATETIME"])
+        self.layout.addRow("Тип данных:", self.dataType)
+        self.setPrimeryKey = QtWidgets.QCheckBox(self)
+        self.layout.addRow("PRIMARY KEY", self.setPrimeryKey)
+        self.setNull = QtWidgets.QCheckBox(self)
+        self.layout.addRow("NOT NULL", self.setNull)
+        self.setUnique = QtWidgets.QCheckBox(self)
+        self.layout.addRow("UNIQUE", self.setUnique)
+        self.setForeignKey = QtWidgets.QCheckBox(self)
+        self.layout.addRow("FOREIGN KEY", self.setForeignKey)
+
+        self.setPrimeryKey.stateChanged.connect(self.setPrimeryKeyState)
+        self.setForeignKey.stateChanged.connect(self.setForeignKeyState)
+    def setPrimeryKeyState(self):
+        if self.setPrimeryKey.isChecked():
+            self.setNull.setChecked(False)
+            self.setNull.setEnabled(False)
+            self.setUnique.setChecked(False)
+            self.setUnique.setEnabled(False)
+            self.setForeignKey.setChecked(False)
+            self.setForeignKey.setEnabled(False)
+        else:
+            self.setNull.setChecked(False)
+            self.setNull.setEnabled(True)
+            self.setUnique.setChecked(False)
+            self.setUnique.setEnabled(True)
+            self.setForeignKey.setChecked(False)
+            self.setForeignKey.setEnabled(True)
+    def setForeignKeyState(self):
+        if self.setForeignKey.isChecked():
+            self.nameTable = QtWidgets.QComboBox(self)
+            tables = lists_tables()
+            if tables:
+                self.nameTable.addItems(tables)
+                self.nameTable.show()
+            else:
+                self.nameTable.addItem("Нет доступных таблиц")
+                self.nameTable.setEnabled(False)
+            self.layout.addRow("Наименование таблицы", self.nameTable)
+        else:
+            self.layout.removeRow(self.nameTable)
+
+
+
+
 class CreateTable:
     def __init__(self, parent=None):
         self.parent = parent
@@ -176,10 +271,10 @@ class CreateSchema(QtWidgets.QDialog):
         self.listUser.hide()
         self.ok_button = QtWidgets.QPushButton("OK")
         self.cancel_button = QtWidgets.QPushButton("Отмена")
-        btn_layout = QtWidgets.QHBoxLayout()
-        btn_layout.addWidget(self.ok_button)
-        btn_layout.addWidget(self.cancel_button)
-        self.layout.addRow(btn_layout)
+        self.btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_layout.addWidget(self.ok_button)
+        self.btn_layout.addWidget(self.cancel_button)
+        self.layout.addRow(self.btn_layout)
         self.ok_button.clicked.connect(self.sendRequest)
         self.cancel_button.clicked.connect(self.reject)
         self.forUser.stateChanged.connect(self.setForUser)
@@ -258,87 +353,8 @@ ORDER BY role_name desc;
         except Exception as e:
             print("Ошибка:", e)
         return list_user
-class CreateColumn(QtWidgets.QDialog):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Добавить запись")
-        self.resize(350, 150)
-        # Формовый layout (подпись + поле в строку)
-        layout = QtWidgets.QFormLayout(self)
-        self.nameTable = QtWidgets.QComboBox(self)
-        tables = self.lists_tables()  # <- здесь сохраняем результат
-        if tables:
-            self.nameTable.addItems(tables)
-        else:
-            self.nameTable.addItem("Нет доступных таблиц")
-            self.nameTable.setEnabled(False)  # блокируем выбор
-        layout.addRow("Имя таблицы", self.nameTable)
-        # Имя
-        self.name = QtWidgets.QLineEdit(self)
-        layout.addRow("Имя поля:", self.name)
-
-        # Тип данных
-        self.dataType = QtWidgets.QComboBox(self)
-        self.dataType.addItems(["VARCHAR", "DATE", "INT", "FLOAT", "INTEGER", "TEXT", "BOOLEAN", "DECIMAL", "TIME", "DATETIME"])
-        layout.addRow("Тип данных:", self.dataType)
-
-        # Primary Key
-        self.primaryKey = QtWidgets.QCheckBox("Primary Key", self)
-        layout.addRow(self.primaryKey)
-
-        # Unique
-        self.unique = QtWidgets.QCheckBox("Unique", self)
-        layout.addRow(self.unique)
-
-        # NOT NULL
-        self.notNull = QtWidgets.QCheckBox("NOT NULL", self)
-        layout.addRow(self.notNull)
-
-        # Кнопки
-        self.ok_button = QtWidgets.QPushButton("OK")
-        self.cancel_button = QtWidgets.QPushButton("Отмена")
-        btn_layout = QtWidgets.QHBoxLayout()
-        btn_layout.addWidget(self.ok_button)
-        btn_layout.addWidget(self.cancel_button)
-        layout.addRow(btn_layout)
-
-        # Сигналы
-        self.ok_button.clicked.connect(self.sendRequest)
-        self.cancel_button.clicked.connect(self.reject)
-        self.primaryKey.stateChanged.connect(self.toggle_constraints)
-
-    def sendRequest(self):
-        cursor = connection.cursor()
-        cursor.execute("INSERT INTO test (name, position) VALUES (%s, %s);",
-                       ("Иван Иванов", "Разработчик"))
-        connection.commit()
-
-    def lists_tables(self):
-        list_table = []
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = %s
-                    ORDER BY table_name;
-                """, (schema,))
-                tables = cursor.fetchall()
-                for t in tables:
-                    list_table.append(t[0])
-        except Exception as e:
-            print("Ошибка:", e)
-        return list_table
-
-    def toggle_constraints(self):
-        if self.primaryKey.stateChanged:
-            self.unique.setChecked(False)
-            self.notNull.setChecked(False)
-            self.unique.setEnabled(False)
-            self.notNull.setEnabled(False)
-        else:
-            self.unique.setEnabled(True)
-            self.notNull.setEnabled(True)
+class CreateData(QtWidgets.QDialog):
+    pass
 class DropTable(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -355,11 +371,10 @@ class DropTable(QtWidgets.QDialog):
         btn_layout.addWidget(self.ok_button)
         btn_layout.addWidget(self.cancel_button)
         self.layout.addRow(btn_layout)
-        tables = CreateColumn.lists_tables(self)
         #Сигналы
         self.ok_button.clicked.connect(self.windowConfirmation)
         self.cancel_button.clicked.connect(self.reject)
-        tables = CreateColumn.lists_tables(self)
+        tables = lists_tables()
 
         if tables:
             self.nameTable.addItems(tables)
@@ -379,7 +394,7 @@ class DropTable(QtWidgets.QDialog):
         if reply == QtWidgets.QMessageBox.Yes:
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(f"DROP TABLE {table_name} CASCADE;")
+                    cursor.execute(f"DROP TABLE {schema}.{table_name} CASCADE;")
                 connection.commit()
                 QtWidgets.QMessageBox.information(
                     self,
@@ -432,16 +447,3 @@ class CreateUser(QtWidgets.QDialog):
             self.textPasswordUser.show()
         else:
             self.textPasswordUser.hide()
-def listSchema():
-    list_schemas = ['Не выбрано']
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-            SELECT schema_name FROM information_schema.schemata
-                    """)
-            schemas = cursor.fetchall()
-            for s in schemas:
-                list_schemas.append(s[0])
-    except Exception as e:
-        print("Ошибка:", e)
-    return list_schemas
