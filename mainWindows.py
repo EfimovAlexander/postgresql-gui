@@ -2,29 +2,69 @@ from shlex import join
 from PySide6 import QtCore, QtWidgets, QtGui
 from main import logger, connection
 
+
+schema = ''
 class MainWidget(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
+        self.setStyleSheet("""
+                    QWidget {
+                        background-image: url('E:/Питон. Проекты/Лаба БД/background.jpg');
+                        background-repeat: no-repeat;
+                        background-position: center;
+                        background-attachment: fixed;
+                    }
+                """)
         self.layout = QtWidgets.QVBoxLayout(self) #Распологает кнопки вертикально
         # Объявление кнопок
+        self.buttonSetSchema = QtWidgets.QPushButton("Выбрать схему")
         self.buttonCreateUser = QtWidgets.QPushButton("Добавить пользователя")
         self.buttonCreateSchema = QtWidgets.QPushButton("Создать схему")
         self.buttonCreateTable = QtWidgets.QPushButton("Создать таблицу")
-        self.buttonCreateColumns = QtWidgets.QPushButton("Внести запись в таблицу")
+        self.buttonCreateColumn = QtWidgets.QPushButton("Создать колонку в таблице")
+        self.buttonCreateData = QtWidgets.QPushButton("Внести запись в таблицу")
         self.buttonDropTable = QtWidgets.QPushButton("Удалить таблицу")
         # Добавление кнопок на главный экран
+        self.layout.addWidget(self.buttonSetSchema)
         self.layout.addWidget(self.buttonCreateUser)
         self.layout.addWidget(self.buttonCreateSchema)
         self.layout.addWidget(self.buttonCreateTable)
-        self.layout.addWidget(self.buttonCreateColumns)
+        self.layout.addWidget(self.buttonCreateColumn)
+        self.layout.addWidget(self.buttonCreateData)
         self.layout.addWidget(self.buttonDropTable)
         # Сигналы кнопок
+        self.buttonCreateColumn.clicked.connect(self.openCreateColumn)
+        self.buttonSetSchema.clicked.connect(self.openSetSchema)
         self.buttonCreateUser.clicked.connect(self.openCreateUser)
         self.buttonCreateSchema.clicked.connect(self.openCreateSchema)
-        self.buttonCreateColumns.clicked.connect(self.openCreateColumn)
+        self.buttonCreateData.clicked.connect(self.openCreateData)
         self.buttonDropTable.clicked.connect(self.openDropTable)
         self.buttonCreateTable.clicked.connect(self.openCreateTable)
+        #self.setEnabledButton()
+        #self.warning()
+    def warning(self):
+        QtWidgets.QMessageBox.information(
+            self, "Приветствие",
+            f"Перед началом работы выберите схему!"
+        )
     def openCreateColumn(self):
+        self.col_window = CreateColumn()
+        self.col_window.exec()
+    def setEnabledButton(self):
+        if schema == '':
+            self.buttonCreateTable.setEnabled(False)
+            self.buttonDropTable.setEnabled(False)
+            self.buttonCreateData.setEnabled(False)
+        else:
+            self.buttonCreateTable.setEnabled(True)
+            self.buttonDropTable.setEnabled(True)
+            self.buttonCreateData.setEnabled(True)
+    def openSetSchema(self):
+        self.col_window = SetSchema()
+        self.col_window.exec()
+        self.setEnabledButton()  # обновляем доступность кнопок
+        print(schema)
+    def openCreateData(self):
         # создаём экземпляр окна
         self.col_window = CreateColumn()
         # self.col_window.show()   # немодальное окно
@@ -40,6 +80,47 @@ class MainWidget(QtWidgets.QWidget):
     def openCreateUser(self):
         self.col_window = CreateUser()
         self.col_window.exec()
+
+class CreateColumn(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Добавить колонку")
+        self.resize(400,200)
+        self.layout = QtWidgets.QFormLayout(self)
+        self.layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
+class SetSchema(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Выбрать схему")
+        self.resize(100, 100)
+        self.layout = QtWidgets.QFormLayout(self)
+        # Объявление объектов
+        self.nameSchema = QtWidgets.QComboBox(self)
+        schemas = listSchema()
+        if schemas:
+            self.nameSchema.addItems(schemas)
+        else:
+            self.nameSchema.addItem("Нет схем")
+            self.nameSchema.setEnabled(False)
+        self.layout.addRow("Наименование схемы",self.nameSchema)
+        self.ok_button = QtWidgets.QPushButton("Выбрать")
+        self.cancel_button = QtWidgets.QPushButton("Отмена")
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addWidget(self.ok_button)
+        btn_layout.addWidget(self.cancel_button)
+        self.layout.addRow(btn_layout)
+        self.ok_button.clicked.connect(self.setSchema)
+        self.cancel_button.clicked.connect(self.reject)
+
+    def setSchema(self):
+        global schema
+        schema = self.nameSchema.currentText()
+        QtWidgets.QMessageBox.information(
+            self,
+            "Успех",
+            f"Выбрана схема {schema}."
+        )
+        self.accept()
 class CreateTable:
     def __init__(self, parent=None):
         self.parent = parent
@@ -56,7 +137,7 @@ class CreateTable:
         if ok and table_name:
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(f'CREATE TABLE "{table_name}" ();')
+                    cursor.execute(f'CREATE TABLE {schema}.{table_name} ();')
                 connection.commit()
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self.parent, "Ошибка",
@@ -239,9 +320,9 @@ class CreateColumn(QtWidgets.QDialog):
                 cursor.execute("""
                     SELECT table_name
                     FROM information_schema.tables
-                    WHERE table_schema = 'public'
+                    WHERE table_schema = %s
                     ORDER BY table_name;
-                """)
+                """, (schema,))
                 tables = cursor.fetchall()
                 for t in tables:
                     list_table.append(t[0])
@@ -264,15 +345,7 @@ class DropTable(QtWidgets.QDialog):
         self.setWindowTitle("Удалить таблицу")
         self.resize(350, 150)
         self.layout = QtWidgets.QFormLayout(self)
-        self.nameSchema = QtWidgets.QComboBox(self)
-        schemas = listSchema()
-        if schemas:
-            self.nameSchema.addItems(schemas)
-        else:
-            self.nameSchema.addItem("Нет схем")
-            self.nameSchema.setEnabled(False)
-
-        self.layout.addRow(self.nameSchema)
+        self.layout.addRow ("Рабочая схема", QtWidgets.QLabel(schema))
         self.nameTable = QtWidgets.QComboBox(self)
         self.layout.addRow("Имя таблицы", self.nameTable)
         # Кнопки
@@ -359,8 +432,6 @@ class CreateUser(QtWidgets.QDialog):
             self.textPasswordUser.show()
         else:
             self.textPasswordUser.hide()
-
-
 def listSchema():
     list_schemas = ['Не выбрано']
     try:
