@@ -37,14 +37,6 @@ except Exception as _ex:
 
 
 if __name__ == "__main__":
-    LOG_FILE = "app_log.log"
-    logger = logging.getLogger("demo_app")
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s;%(levelname)s;%(message)s",
-                                  "%Y-%m-%d %H:%M:%S")
-    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
     logger.info('Проект открыт')
     app = QtWidgets.QApplication([])
     widget = MainWidget()

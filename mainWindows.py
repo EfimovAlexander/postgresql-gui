@@ -13,7 +13,13 @@ def list_schema():
             for s in schemas:
                 list_schemas.append(s[0])
     except Exception as e:
-        print("Ошибка:", e)
+        QtWidgets.QMessageBox.critical(
+            None,
+            "Ошибка",
+            f"Не удалось получить список схем:\n{e}"
+        )
+        logger.info('Ошибка при получении списка схем, %s', e)
+
     return list_schemas
 def lists_tables():
     list_table = ["Не выбрано"]
@@ -159,31 +165,53 @@ class SetSchema(QtWidgets.QDialog):
             "Успех",
             f"Выбрана схема {schema}."
         )
+        logger.info(f"Выбрана схема {schema}.")
         self.accept()
 class CreateColumn(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Добавить колонку")
-        self.resize(400,200)
+        self.resize(400, 250)
+
         self.layout = QtWidgets.QFormLayout(self)
         self.layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
+
+        # --- Поля для колонки ---
         self.nameColumn = QtWidgets.QLineEdit(self)
         self.layout.addRow("Наименование колонки", self.nameColumn)
+
         self.dataType = QtWidgets.QComboBox(self)
         self.dataType.addItems(
-            ["VARCHAR", "DATE", "INT", "FLOAT", "INTEGER", "TEXT", "BOOLEAN", "DECIMAL", "TIME", "DATETIME"])
+            ["VARCHAR", "DATE", "INT", "FLOAT", "INTEGER", "TEXT", "BOOLEAN", "DECIMAL", "TIME", "DATETIME"]
+        )
         self.layout.addRow("Тип данных:", self.dataType)
+
+        # --- Флаги ---
         self.setPrimeryKey = QtWidgets.QCheckBox(self)
         self.layout.addRow("PRIMARY KEY", self.setPrimeryKey)
+
         self.setNull = QtWidgets.QCheckBox(self)
         self.layout.addRow("NOT NULL", self.setNull)
+
         self.setUnique = QtWidgets.QCheckBox(self)
         self.layout.addRow("UNIQUE", self.setUnique)
+
         self.setForeignKey = QtWidgets.QCheckBox(self)
         self.layout.addRow("FOREIGN KEY", self.setForeignKey)
 
+        # --- Виджеты для внешнего ключа (создаём сразу, но скрываем) ---
+        self.nameTable = QtWidgets.QComboBox(self)
+        self.nameAttribute = QtWidgets.QComboBox(self)
+        self.nameTable.hide()
+        self.nameAttribute.hide()
+        self.layout.addRow("Название таблицы", self.nameTable)
+        self.layout.addRow("Название атрибута", self.nameAttribute)
+
+        # --- Сигналы ---
         self.setPrimeryKey.stateChanged.connect(self.setPrimeryKeyState)
         self.setForeignKey.stateChanged.connect(self.setForeignKeyState)
+        self.nameTable.currentIndexChanged.connect(self.updateAttributes)
+
     def setPrimeryKeyState(self):
         if self.setPrimeryKey.isChecked():
             self.setNull.setChecked(False)
@@ -199,23 +227,34 @@ class CreateColumn(QtWidgets.QDialog):
             self.setUnique.setEnabled(True)
             self.setForeignKey.setChecked(False)
             self.setForeignKey.setEnabled(True)
+
     def setForeignKeyState(self):
         if self.setForeignKey.isChecked():
-            self.nameTable = QtWidgets.QComboBox(self)
             tables = lists_tables()
+            self.nameTable.clear()
             if tables:
-                self.nameTable.addItems(tables)
-                self.nameTable.show()
+                self.nameTable.addItems(["Не выбрано"] + tables)
+                self.nameTable.setEnabled(True)
             else:
                 self.nameTable.addItem("Нет доступных таблиц")
                 self.nameTable.setEnabled(False)
-            self.layout.addRow("Наименование таблицы", self.nameTable)
+
+            # показываем виджеты
+            self.nameTable.show()
+            self.nameAttribute.show()
         else:
-            self.layout.removeRow(self.nameTable)
+            self.nameTable.hide()
+            self.nameAttribute.hide()
 
+    def updateAttributes(self):
+        table_name = self.nameTable.currentText()
+        if table_name in ("Не выбрано", "Нет доступных таблиц", ""):
+            self.nameAttribute.clear()
+            return
 
-
-
+        attributes = list_attributes(schema, table_name)
+        self.nameAttribute.clear()
+        self.nameAttribute.addItems(attributes)
 class CreateTable:
     def __init__(self, parent=None):
         self.parent = parent
@@ -417,6 +456,7 @@ class CreateUser(QtWidgets.QDialog):
         # Объявление объектов
         self.nameNewUser = QtWidgets.QLineEdit(self)
         self.textPasswordUser = QtWidgets.QLineEdit(self)
+        self.login = QtWidgets.QCheckBox("LOGIN", self)
         self.passwordUser = QtWidgets.QCheckBox("C паролем",self)
         self.superUser = QtWidgets.QCheckBox("SUPERUSER", self)
         self.createDB = QtWidgets.QCheckBox("CREATEDB", self)
@@ -427,13 +467,14 @@ class CreateUser(QtWidgets.QDialog):
         self.layout.addRow("Имя пользователя:", self.nameNewUser)
         self.layout.addRow(self.textPasswordUser)
         self.layout.addRow(self.passwordUser)
+        self.layout.addRow(self.login)
         self.layout.addRow(self.superUser)
         self.layout.addRow(self.createDB)
         self.layout.addRow(self.createROLE)
-        btn_layout = QtWidgets.QHBoxLayout()
-        btn_layout.addWidget(self.ok_button)
-        btn_layout.addWidget(self.cancel_button)
-        self.layout.addRow(btn_layout)
+        self.btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_layout.addWidget(self.ok_button)
+        self.btn_layout.addWidget(self.cancel_button)
+        self.layout.addRow(self.btn_layout)
         # Дополнительные настройки
         self.nameNewUser.setPlaceholderText("Введите имя пользователя:")
         self.textPasswordUser.setPlaceholderText("Введите пароль:")
@@ -441,9 +482,49 @@ class CreateUser(QtWidgets.QDialog):
         # Сигналы кнопок
         self.passwordUser.stateChanged.connect(self.setPassword)
         self.cancel_button.clicked.connect(self.reject)
+        self.ok_button.clicked.connect(self.sendRequest)
 
     def setPassword(self):
         if self.passwordUser.isChecked():
             self.textPasswordUser.show()
         else:
             self.textPasswordUser.hide()
+            self.textPasswordUser.clear()
+
+    def get_privileges(self):
+        privileges = []
+        if self.superUser.isChecked():
+            privileges.append("SUPERUSER")
+        if self.createDB.isChecked():
+            privileges.append("CREATEDB")
+        if self.createROLE.isChecked():
+            privileges.append("CREATEROLE")
+        if self.login.isChecked():
+            privileges.append("LOGIN")
+
+        return " ".join(privileges) if privileges else ""
+
+    def sendRequest(self):
+        username = self.nameNewUser.text().strip()
+        password = self.textPasswordUser.text().strip()
+        privileges = self.get_privileges()
+        try:
+            if not username:
+                QtWidgets.QMessageBox.warning(self, "Ошибка", "Имя пользователя не может быть пустым.")
+                return
+
+            with connection.cursor() as cursor:
+                if password:
+                    query = f"CREATE USER \"{username}\" WITH PASSWORD %s {privileges};"
+                    cursor.execute(query, (password,))
+                    connection.commit()
+                else:
+                    query = f"CREATE USER {username} WITH {privileges};"
+                    cursor.execute(query)
+
+            QtWidgets.QMessageBox.information(self, "Успех", f"Пользователь '{username}' успешно создан.")
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось создать пользователя:\n{e}")
+            print("Ошибка:", e)
+
