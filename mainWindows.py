@@ -1,4 +1,3 @@
-from shlex import join
 from PySide6 import QtCore, QtWidgets, QtGui
 from main import logger, connection
 
@@ -182,7 +181,7 @@ class CreateColumn(QtWidgets.QDialog):
 
         self.dataType = QtWidgets.QComboBox(self)
         self.dataType.addItems(
-            ["VARCHAR", "DATE", "INT", "FLOAT", "INTEGER", "TEXT", "BOOLEAN", "DECIMAL", "TIME", "DATETIME"]
+            ['BIGINT', 'BOOLEAN', 'CHAR', 'DATE', 'DATETIME', 'DECIMAL', 'INTEGER', 'INTERVAL', 'SERIAL', 'SMALLINT', 'TEXT', 'TIME', 'TIMESTAMP', 'VARCHAR']
         )
         self.layout.addRow("Тип данных:", self.dataType)
 
