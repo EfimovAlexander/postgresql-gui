@@ -54,7 +54,6 @@ def list_attributes(schema, table):
     return list_attributes
 def list_unique_attributes(schema, table):
     pass
-
 schema = ''
 
 class MainWidget(QtWidgets.QWidget):
@@ -74,6 +73,7 @@ class MainWidget(QtWidgets.QWidget):
         self.buttonCreateUser = QtWidgets.QPushButton("Добавить пользователя")
         self.buttonCreateSchema = QtWidgets.QPushButton("Создать схему")
         self.buttonCreateTable = QtWidgets.QPushButton("Создать таблицу")
+        self.buttonCreateEnum = QtWidgets.QPushButton("Создать пользовательский тип данных")
         self.buttonCreateColumn = QtWidgets.QPushButton("Создать колонку в таблице")
         self.buttonCreateData = QtWidgets.QPushButton("Внести запись в таблицу")
         self.buttonDropTable = QtWidgets.QPushButton("Удалить таблицу")
@@ -82,56 +82,92 @@ class MainWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.buttonCreateUser)
         self.layout.addWidget(self.buttonCreateSchema)
         self.layout.addWidget(self.buttonCreateTable)
+        self.layout.addWidget(self.buttonCreateEnum)
         self.layout.addWidget(self.buttonCreateColumn)
+        self.layout.addWidget(self.buttonCreateEnum)
         self.layout.addWidget(self.buttonCreateData)
         self.layout.addWidget(self.buttonDropTable)
         # Сигналы кнопок
-        self.buttonCreateColumn.clicked.connect(self.openCreateColumn)
-        self.buttonSetSchema.clicked.connect(self.openSetSchema)
-        self.buttonCreateUser.clicked.connect(self.openCreateUser)
-        self.buttonCreateSchema.clicked.connect(self.openCreateSchema)
-        self.buttonCreateData.clicked.connect(self.openCreateData)
-        self.buttonDropTable.clicked.connect(self.openDropTable)
-        self.buttonCreateTable.clicked.connect(self.openCreateTable)
+        self.buttonCreateEnum.clicked.connect(lambda: self.openWindow(CreateEnum()))
+        self.buttonCreateColumn.clicked.connect(lambda: self.openWindow(CreateColumn()))
+        self.buttonSetSchema.clicked.connect(lambda : self.openWindow(SetSchema()))
+        self.buttonCreateSchema.clicked.connect(lambda: self.openWindow(CreateSchema()))
+        self.buttonCreateUser.clicked.connect(lambda: self.openWindow(CreateUser()))
+        self.buttonCreateData.clicked.connect(lambda: self.openWindow(CreateData()))
+        self.buttonDropTable.clicked.connect(lambda: self.openWindow(DropTable()))
+        self.buttonCreateTable.clicked.connect(lambda: self.openWindow(CreateTable()))
         #self.setEnabledButton()
         #self.warning()
+
+    def openWindow(self, window):
+        window.exec()
     def warning(self):
         QtWidgets.QMessageBox.information(
             self, "Приветствие",
             f"Перед началом работы выберите схему!"
         )
-    def openCreateColumn(self):
-        self.col_window = CreateColumn()
-        self.col_window.exec()
-    def setEnabledButton(self):
-        if schema == '':
-            self.buttonCreateTable.setEnabled(False)
-            self.buttonDropTable.setEnabled(False)
-            self.buttonCreateData.setEnabled(False)
-        else:
-            self.buttonCreateTable.setEnabled(True)
-            self.buttonDropTable.setEnabled(True)
-            self.buttonCreateData.setEnabled(True)
-    def openSetSchema(self):
-        self.col_window = SetSchema()
-        self.col_window.exec()
-        self.setEnabledButton()  # обновляем доступность кнопок
-    def openCreateData(self):
-        # создаём экземпляр окна
-        self.col_window = CreateData()
-        # self.col_window.show()   # немодальное окно
-        self.col_window.exec() # если нужно модальное окно (блокирует родителя)
-    def openDropTable(self):
-        self.col_window = DropTable()
-        self.col_window.exec()
-    def openCreateTable(self):
-        self.col_window = CreateTable()
-    def openCreateSchema(self):
-        self.col_window = CreateSchema()
-        self.col_window.exec()
-    def openCreateUser(self):
-        self.col_window = CreateUser()
-        self.col_window.exec()
+
+class CreateEnum(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Добавить пользовательский тип данных")
+        self.resize(350, 250)
+
+        self.layout = QtWidgets.QFormLayout(self)
+
+        # Поле для ввода количества значений ENUM
+        self.countEnum = QtWidgets.QLineEdit(self)
+        self.countEnum.setPlaceholderText("Введите количество значений (например: 3)")
+        self.layout.addRow("Количество элементов:", self.countEnum)
+
+        # Кнопка для создания полей
+        self.acceptButton = QtWidgets.QPushButton("Создать поля")
+        self.layout.addWidget(self.acceptButton)
+        self.acceptButton.clicked.connect(self.addRowEnum)
+
+        # Список для хранения полей
+        self.enum_count = []
+
+    def addRowEnum(self):
+        # Очищаем старые поля, если они уже были добавлены
+        for widget in self.enum_count:
+            self.layout.removeRow(widget)
+        self.enum_count.clear()
+
+        # Проверка, что введено число
+        try:
+            count = int(self.countEnum.text())
+            if count <= 0:
+                raise ValueError
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Введите корректное положительное число!")
+            return
+
+        # Добавляем строки для ввода значений ENUM
+        for i in range(count):
+            line_edit = QtWidgets.QLineEdit(self)
+            self.enum_count.append(line_edit)
+            self.layout.addRow(f"Значение {i + 1}:", line_edit)
+
+        # Добавляем кнопку подтверждения
+        self.saveButton = QtWidgets.QPushButton("Сохранить ENUM")
+        self.layout.addWidget(self.saveButton)
+        self.saveButton.clicked.connect(self.saveEnumValues)
+
+    def saveEnumValues(self):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                CREATE TYPE  
+                
+                """)
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Успех"
+        )
+        self.accept()
+
 class SetSchema(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -254,7 +290,7 @@ class CreateColumn(QtWidgets.QDialog):
         attributes = list_attributes(schema, table_name)
         self.nameAttribute.clear()
         self.nameAttribute.addItems(attributes)
-class CreateTable:
+class CreateTable(QtWidgets.QDialog):
     def __init__(self, parent=None):
         self.parent = parent
         self.createTableDialog()
