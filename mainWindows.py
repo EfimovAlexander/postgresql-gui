@@ -54,6 +54,40 @@ def list_attributes(schema, table):
     return list_attributes
 def list_unique_attributes(schema, table):
     pass
+def list_enum():
+    list_enum = [
+        'Не выбрано', 'BIGINT', 'BOOLEAN', 'CHAR', 'DATE', 'DATETIME',
+        'DECIMAL', 'INTEGER', 'INTERVAL', 'SERIAL', 'SMALLINT',
+        'TEXT', 'TIME', 'TIMESTAMP', 'VARCHAR'
+    ]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT t.typname
+                FROM pg_type t
+                JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+                WHERE (t.typrelid = 0 OR (
+                        SELECT c.relkind = 'c'
+                        FROM pg_catalog.pg_class c
+                        WHERE c.oid = t.typrelid
+                    ))
+                  AND NOT EXISTS (
+                        SELECT 1 
+                        FROM pg_catalog.pg_type el
+                        WHERE el.oid = t.typelem
+                          AND el.typarray = t.oid
+                    )
+                  AND n.nspname = %s
+                ORDER BY t.typname;
+            """, (schema,))
+            enum = cursor.fetchall()
+        # курсор уже закрыт — теперь можно спокойно работать с данными
+        for e in enum:
+            list_enum.append(e[0])
+        print(enum)
+    except Exception as e:
+        print("Ошибка:", e)
+    return list_enum
 schema = ''
 
 class MainWidget(QtWidgets.QWidget):
@@ -106,7 +140,6 @@ class MainWidget(QtWidgets.QWidget):
             self, "Приветствие",
             f"Перед началом работы выберите схему!"
         )
-
 class CreateEnum(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -116,8 +149,11 @@ class CreateEnum(QtWidgets.QDialog):
         self.layout = QtWidgets.QFormLayout(self)
 
         # Поле для ввода количества значений ENUM
+        self.nameEnum = QtWidgets.QLineEdit(self)
+        self.nameEnum.setPlaceholderText("Введите наименование пользовательского типа")
         self.countEnum = QtWidgets.QLineEdit(self)
-        self.countEnum.setPlaceholderText("Введите количество значений (например: 3)")
+        self.countEnum.setPlaceholderText("Введите количество значений")
+        self.layout.addRow("Наименование:", self.nameEnum)
         self.layout.addRow("Количество элементов:", self.countEnum)
 
         # Кнопка для создания полей
@@ -153,21 +189,30 @@ class CreateEnum(QtWidgets.QDialog):
         self.saveButton = QtWidgets.QPushButton("Сохранить ENUM")
         self.layout.addWidget(self.saveButton)
         self.saveButton.clicked.connect(self.saveEnumValues)
-
     def saveEnumValues(self):
+        list_enum = []
+        for e in self.enum_count:
+            text = e.text().strip()
+            if text:
+                list_enum.append("'" + text + "'")
+        list_enum = ",".join(list_enum)
+        print(list_enum)
         try:
             with connection.cursor() as cursor:
-                cursor.execute("""
-                CREATE TYPE  
-                
-                """)
+                cursor.execute(
+                    f'CREATE TYPE {schema}.{self.nameEnum.text()} AS ENUM ({list_enum});'
+                               )
+                QtWidgets.QMessageBox.information(
+                    self, "Успех",
+                    f"Создан пользоваский тип {self.nameEnum.text()} со значениями {list_enum}!"
 
-        QtWidgets.QMessageBox.information(
-            self,
-            "Успех"
-        )
-        self.accept()
-
+                )
+                self.accept()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Ошибка",
+                f"Ошибка при работе с PostgreSQL:\n{e}"
+            )
 class SetSchema(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -216,11 +261,14 @@ class CreateColumn(QtWidgets.QDialog):
         self.layout.addRow("Наименование колонки", self.nameColumn)
 
         self.dataType = QtWidgets.QComboBox(self)
-        self.dataType.addItems(
-            ['BIGINT', 'BOOLEAN', 'CHAR', 'DATE', 'DATETIME', 'DECIMAL', 'INTEGER', 'INTERVAL', 'SERIAL', 'SMALLINT', 'TEXT', 'TIME', 'TIMESTAMP', 'VARCHAR']
-        )
-        self.layout.addRow("Тип данных:", self.dataType)
 
+        enums = list_enum()
+        if enums:
+            self.dataType.addItems(enums)
+        else:
+            self.dataType.addItem("Нет доступных таблиц")
+
+        self.layout.addRow("Тип данных", self.dataType)
         # --- Флаги ---
         self.setPrimeryKey = QtWidgets.QCheckBox(self)
         self.layout.addRow("PRIMARY KEY", self.setPrimeryKey)
