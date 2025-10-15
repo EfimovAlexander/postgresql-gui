@@ -1,5 +1,6 @@
-from PySide6 import QtCore, QtWidgets, QtGui
+from PySide6 import QtWidgets
 from main import logger, connection
+
 
 def list_schema():
     list_schemas = ['Не выбрано']
@@ -12,30 +13,39 @@ def list_schema():
             for s in schemas:
                 list_schemas.append(s[0])
     except Exception as e:
+        logger.exception('Ошибка при получении списка схем', e)
         QtWidgets.QMessageBox.critical(
             None,
             "Ошибка",
-            f"Не удалось получить список схем:\n{e}"
+            "Не удалось получить список схем"
         )
-        logger.info('Ошибка при получении списка схем, %s', e)
 
     return list_schemas
-def lists_tables():
+
+
+def list_tables():
     list_table = ["Не выбрано"]
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = %s 
-                ORDER BY table_name;
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s
+            ORDER BY table_name;
             """, (schema,))
             tables = cursor.fetchall()
             for t in tables:
                 list_table.append(t[0])
     except Exception as e:
-        print("Ошибка:", e)
+        logger.exception('Ошибка при получении списка таблиц', e)
+        QtWidgets.QMessageBox.critical(
+            None,
+            "Ошибка",
+            "Не удалось получить список таблиц"
+        )
     return list_table
+
+
 def list_attributes(schema, table):
     list_attributes = ["Не выбрано"]
     try:
@@ -50,10 +60,15 @@ def list_attributes(schema, table):
             for a in attributes:
                 list_attributes.append(a[0])
     except Exception as e:
-        QtWidgets.QMessageBox.critical("Ошибка", f"Не удалось получить список атрибутов:\n{e}")
+        logger.exception('Не удалось получить список атрибутов, %s', e)
+        QtWidgets.QMessageBox.critical("Ошибка", "Не удалось получить список атрибутов")
     return list_attributes
+
+
 def list_unique_attributes(schema, table):
     pass
+
+
 def list_enum():
     list_enum = [
         'Не выбрано', 'BIGINT', 'BOOLEAN', 'CHAR', 'DATE', 'DATETIME',
@@ -67,28 +82,28 @@ def list_enum():
                 FROM pg_type t
                 JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
                 WHERE (t.typrelid = 0 OR (
-                        SELECT c.relkind = 'c'
-                        FROM pg_catalog.pg_class c
-                        WHERE c.oid = t.typrelid
-                    ))
-                  AND NOT EXISTS (
-                        SELECT 1 
-                        FROM pg_catalog.pg_type el
-                        WHERE el.oid = t.typelem
-                          AND el.typarray = t.oid
-                    )
-                  AND n.nspname = %s
+                SELECT c.relkind = 'c'
+                FROM pg_catalog.pg_class c
+                WHERE c.oid = t.typrelid))
+                AND NOT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_type el
+                WHERE el.oid = t.typelem
+                AND el.typarray = t.oid)
+                AND n.nspname = %s
                 ORDER BY t.typname;
             """, (schema,))
             enum = cursor.fetchall()
-        # курсор уже закрыт — теперь можно спокойно работать с данными
         for e in enum:
             list_enum.append(e[0])
         print(enum)
     except Exception as e:
         print("Ошибка:", e)
     return list_enum
+
+
 schema = ''
+
 
 class MainWidget(QtWidgets.QWidget):
     def __init__(self):
@@ -101,8 +116,8 @@ class MainWidget(QtWidgets.QWidget):
                         background-attachment: fixed;
                     }
                 """)
-        self.layout = QtWidgets.QVBoxLayout(self) #Распологает кнопки вертикально
-        # Объявление кнопок
+        self.layout = QtWidgets.QVBoxLayout(self) #  Распологает кнопки вертикально
+        #  Объявление кнопок
         self.buttonSetSchema = QtWidgets.QPushButton("Выбрать схему")
         self.buttonCreateUser = QtWidgets.QPushButton("Добавить пользователя")
         self.buttonCreateSchema = QtWidgets.QPushButton("Создать схему")
@@ -124,7 +139,7 @@ class MainWidget(QtWidgets.QWidget):
         # Сигналы кнопок
         self.buttonCreateEnum.clicked.connect(lambda: self.openWindow(CreateEnum()))
         self.buttonCreateColumn.clicked.connect(lambda: self.openWindow(CreateColumn()))
-        self.buttonSetSchema.clicked.connect(lambda : self.openWindow(SetSchema()))
+        self.buttonSetSchema.clicked.connect(lambda: self.openWindow(SetSchema()))
         self.buttonCreateSchema.clicked.connect(lambda: self.openWindow(CreateSchema()))
         self.buttonCreateUser.clicked.connect(lambda: self.openWindow(CreateUser()))
         self.buttonCreateData.clicked.connect(lambda: self.openWindow(CreateData()))
@@ -135,11 +150,14 @@ class MainWidget(QtWidgets.QWidget):
 
     def openWindow(self, window):
         window.exec()
+
     def warning(self):
         QtWidgets.QMessageBox.information(
             self, "Приветствие",
-            f"Перед началом работы выберите схему!"
+            "Перед началом работы выберите схему!"
         )
+
+
 class CreateEnum(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -151,6 +169,7 @@ class CreateEnum(QtWidgets.QDialog):
         # Поле для ввода количества значений ENUM
         self.nameEnum = QtWidgets.QLineEdit(self)
         self.nameEnum.setPlaceholderText("Введите наименование пользовательского типа")
+        self.layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
         self.countEnum = QtWidgets.QLineEdit(self)
         self.countEnum.setPlaceholderText("Введите количество значений")
         self.layout.addRow("Наименование:", self.nameEnum)
@@ -189,6 +208,7 @@ class CreateEnum(QtWidgets.QDialog):
         self.saveButton = QtWidgets.QPushButton("Сохранить ENUM")
         self.layout.addWidget(self.saveButton)
         self.saveButton.clicked.connect(self.saveEnumValues)
+
     def saveEnumValues(self):
         list_enum = []
         for e in self.enum_count:
@@ -213,6 +233,8 @@ class CreateEnum(QtWidgets.QDialog):
                 self, "Ошибка",
                 f"Ошибка при работе с PostgreSQL:\n{e}"
             )
+
+
 class SetSchema(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -227,7 +249,7 @@ class SetSchema(QtWidgets.QDialog):
         else:
             self.nameSchema.addItem("Нет схем")
             self.nameSchema.setEnabled(False)
-        self.layout.addRow("Наименование схемы",self.nameSchema)
+        self.layout.addRow("Наименование схемы", self.nameSchema)
         self.ok_button = QtWidgets.QPushButton("Выбрать")
         self.cancel_button = QtWidgets.QPushButton("Отмена")
         btn_layout = QtWidgets.QHBoxLayout()
@@ -247,6 +269,8 @@ class SetSchema(QtWidgets.QDialog):
         )
         logger.info(f"Выбрана схема {schema}.")
         self.accept()
+
+
 class CreateColumn(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -313,7 +337,7 @@ class CreateColumn(QtWidgets.QDialog):
 
     def setForeignKeyState(self):
         if self.setForeignKey.isChecked():
-            tables = lists_tables()
+            tables = list_tables()
             self.nameTable.clear()
             if tables:
                 self.nameTable.addItems(["Не выбрано"] + tables)
@@ -496,7 +520,7 @@ class DropTable(QtWidgets.QDialog):
         #Сигналы
         self.ok_button.clicked.connect(self.windowConfirmation)
         self.cancel_button.clicked.connect(self.reject)
-        tables = lists_tables()
+        tables = list_tables()
 
         if tables:
             self.nameTable.addItems(tables)
