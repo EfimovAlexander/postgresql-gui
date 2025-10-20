@@ -12,6 +12,7 @@ def list_schema():
             schemas = cursor.fetchall()
             for s in schemas:
                 list_schemas.append(s[0])
+        logger.info('Список схем успешно загружен')
     except Exception as e:
         logger.exception('Ошибка при получении списка схем', e)
         QtWidgets.QMessageBox.critical(
@@ -19,13 +20,13 @@ def list_schema():
             "Ошибка",
             "Не удалось получить список схем"
         )
-
     return list_schemas
 
 
 def list_tables():
     list_table = ["Не выбрано"]
     try:
+        
         with connection.cursor() as cursor:
             cursor.execute("""
             SELECT table_name
@@ -36,6 +37,7 @@ def list_tables():
             tables = cursor.fetchall()
             for t in tables:
                 list_table.append(t[0])
+        logger.info(f'Cписок таблиц для схемы {schema} успешно получен')
     except Exception as e:
         logger.exception('Ошибка при получении списка таблиц', e)
         QtWidgets.QMessageBox.critical(
@@ -47,7 +49,7 @@ def list_tables():
 
 
 def list_attributes(schema, table):
-    list_attributes = ["Не выбрано"]
+    list_attributes = []
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
@@ -59,6 +61,7 @@ def list_attributes(schema, table):
             attributes = cursor.fetchall()
             for a in attributes:
                 list_attributes.append(a[0])
+        logger.info(f'Список атрибутов для схемы {schema} таблицы {table} успешно получен')
     except Exception as e:
         logger.exception('Не удалось получить список атрибутов, %s', e)
         QtWidgets.QMessageBox.critical("Ошибка", "Не удалось получить список атрибутов")
@@ -96,9 +99,9 @@ def list_enum():
             enum = cursor.fetchall()
         for e in enum:
             list_enum.append(e[0])
-        print(enum)
+        logger.info('Список пользователских типов успешно загружен')
     except Exception as e:
-        print("Ошибка:", e)
+        logger.exception('Ошибка при получении списка пользовательских типов',e)
     return list_enum
 
 
@@ -228,10 +231,12 @@ class CreateEnum(QtWidgets.QDialog):
 
                 )
                 self.accept()
+            logger.info(f'Создан ENUM {self.nameEnum.text()} со значениями {list_enum}')
         except Exception as e:
+            logger.exception('Ошибка при создании пользовательского типа', e)
             QtWidgets.QMessageBox.critical(
                 self, "Ошибка",
-                f"Ошибка при работе с PostgreSQL:\n{e}"
+                f"Ошибка при создании пользовательского типа:\n{e}"
             )
 
 
@@ -362,6 +367,8 @@ class CreateColumn(QtWidgets.QDialog):
         attributes = list_attributes(schema, table_name)
         self.nameAttribute.clear()
         self.nameAttribute.addItems(attributes)
+
+
 class CreateTable(QtWidgets.QDialog):
     def __init__(self, parent=None):
         self.parent = parent
@@ -391,6 +398,8 @@ class CreateTable(QtWidgets.QDialog):
         else:
             QtWidgets.QMessageBox.warning(self.parent, "Отмена",
                                           "Создание таблицы отменено.")
+
+
 class CreateSchema(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -499,8 +508,181 @@ ORDER BY role_name desc;
         except Exception as e:
             print("Ошибка:", e)
         return list_user
+
+
+
+from PySide6 import QtWidgets, QtCore
+import psycopg2
+
 class CreateData(QtWidgets.QDialog):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Внести данные в таблицу")
+        self.resize(500, 350)
+
+        self.layout = QtWidgets.QVBoxLayout(self)
+
+        # --- Базовая форма ---
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.addRow("Рабочая схема", QtWidgets.QLabel(schema))
+
+        self.nameTable = QtWidgets.QComboBox(self)
+        tables = list_tables()
+        if tables:
+            self.nameTable.addItems(tables)
+        else:
+            self.nameTable.addItem("Нет доступных таблиц")
+
+        form_layout.addRow("Название таблицы", self.nameTable)
+
+        self.nameAttributes = QtWidgets.QComboBox(self)
+        form_layout.addRow("Название атрибута", self.nameAttributes)
+
+        self.layout.addLayout(form_layout)
+
+        # --- Контейнер для динамических строк ---
+        self.fields_layout = QtWidgets.QFormLayout()
+        self.layout.addLayout(self.fields_layout)
+
+        # --- Кнопка сохранения ---
+        self.saveButton = QtWidgets.QPushButton("Сохранить данные")
+        self.layout.addWidget(self.saveButton)
+
+        # --- Сигналы ---
+        self.nameTable.currentIndexChanged.connect(self.updateAttributes)
+        self.nameAttributes.currentIndexChanged.connect(self.addAttributeRow)
+        self.saveButton.clicked.connect(self.saveDataToDB)
+
+        # --- Хранение строк и типов ---
+        self.attribute_rows = {}
+        self.attribute_types = {}  # {атрибут: тип данных}
+
+    def updateAttributes(self):
+        """Обновляет список атрибутов и типы данных"""
+        table_name = self.nameTable.currentText()
+        self.nameAttributes.clear()
+        self.attribute_types.clear()
+
+        if table_name in ("Не выбрано", "Нет доступных таблиц", ""):
+            return
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                """, (schema, table_name))
+                attrs = cursor.fetchall()
+                for name, dtype in attrs:
+                    self.attribute_types[name] = dtype
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось получить атрибуты:\n{e}")
+            return
+
+        self.nameAttributes.addItem("Выберите атрибут")
+        self.nameAttributes.addItems(self.attribute_types.keys())
+
+    def addAttributeRow(self):
+        """Добавляет строку для выбранного атрибута"""
+        attr_name = self.nameAttributes.currentText()
+        if attr_name in ("Выберите атрибут", "", None):
+            return
+        if attr_name in self.attribute_rows:
+            return
+
+        label = QtWidgets.QLabel(f"{attr_name} ({self.attribute_types[attr_name]})")
+        line_edit = QtWidgets.QLineEdit()
+        remove_button = QtWidgets.QPushButton("🗑")
+        remove_button.clicked.connect(lambda _, name=attr_name: self.removeAttributeRow(name))
+
+        h_layout = QtWidgets.QHBoxLayout()
+        h_layout.addWidget(line_edit)
+        h_layout.addWidget(remove_button)
+        self.fields_layout.addRow(label, h_layout)
+
+        self.attribute_rows[attr_name] = (label, line_edit, remove_button)
+
+    def removeAttributeRow(self, attr_name):
+        """Удаляет строку"""
+        if attr_name not in self.attribute_rows:
+            return
+        label, line_edit, remove_button = self.attribute_rows.pop(attr_name)
+        self.fields_layout.removeWidget(label)
+        self.fields_layout.removeWidget(line_edit)
+        self.fields_layout.removeWidget(remove_button)
+        label.deleteLater()
+        line_edit.deleteLater()
+        remove_button.deleteLater()
+
+    def get_values(self):
+        """Возвращает словарь {атрибут: значение}"""
+        result = {}
+        for name, (_, line_edit, _) in self.attribute_rows.items():
+            value = line_edit.text().strip()
+            if value:
+                result[name] = value
+        return result
+
+    def validate_value(self, attr_name, value):
+        """Проверяет соответствие типа данных"""
+        expected_type = self.attribute_types.get(attr_name, "")
+        if not value:
+            return True  # пустое допустимо, если NOT NULL не проверяется
+
+        try:
+            if "int" in expected_type:
+                int(value)
+            elif "double" in expected_type or "numeric" in expected_type or "real" in expected_type:
+                float(value)
+            elif "bool" in expected_type:
+                if value.lower() not in ("true", "false", "1", "0", "t", "f"):
+                    raise ValueError
+            elif "date" in expected_type:
+                import datetime
+                datetime.date.fromisoformat(value)
+            # текстовые типы не требуют проверки
+            return True
+        except Exception:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Ошибка типа данных",
+                f"Значение '{value}' не соответствует типу {expected_type.upper()} для атрибута '{attr_name}'."
+            )
+            return False
+
+    def saveDataToDB(self):
+        """Формирует INSERT INTO и выполняет запрос с проверкой типов"""
+        table_name = self.nameTable.currentText()
+        data = self.get_values()
+
+        if not data:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Вы не ввели ни одного значения!")
+            return
+
+        # Проверка типов данных
+        for attr, val in data.items():
+            if not self.validate_value(attr, val):
+                return  # если хотя бы одно поле не прошло проверку
+
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["%s"] * len(data))
+        values = list(data.values())
+
+        query = f'INSERT INTO "{schema}"."{table_name}" ({columns}) VALUES ({placeholders})'
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(query, values)
+                connection.commit()
+            QtWidgets.QMessageBox.information(self, "Успех", "Данные успешно добавлены!")
+            self.close()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось вставить данные:\n{e}")
+
+
+
+
 class DropTable(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -554,6 +736,8 @@ class DropTable(QtWidgets.QDialog):
                     "Ошибка",
                     f"Не удалось удалить таблицу:\n{e}"
                 )
+
+
 class CreateUser(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -635,3 +819,6 @@ class CreateUser(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось создать пользователя:\n{e}")
             print("Ошибка:", e)
 
+
+class DataViewer(QtWidgets.QDialog):
+    pass
