@@ -1,3 +1,5 @@
+from sys import exception
+
 from PySide6 import QtWidgets
 from main import logger, connection
 
@@ -26,7 +28,6 @@ def list_schema():
 def list_tables():
     list_table = ["Не выбрано"]
     try:
-        
         with connection.cursor() as cursor:
             cursor.execute("""
             SELECT table_name
@@ -104,6 +105,30 @@ def list_enum():
         logger.exception('Ошибка при получении списка пользовательских типов',e)
     return list_enum
 
+def list_column(table_name):
+    list_columns = ["Не выбрано"]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+            AND table_name = %s
+            ORDER BY ordinal_position;
+            """, (schema, table_name))
+            columns = cursor.fetchall()
+            for c in columns:
+                list_columns.append(c[0])
+        logger.info(f'Cписок колонок для схемы {schema} таблицы {table_name} успешно получен')
+    except Exception as e:
+        logger.exception('Ошибка при получении списка колонок', e)
+        QtWidgets.QMessageBox.critical(
+            None,
+            "Ошибка",
+            "Не удалось получить список таблиц"
+        )
+    return list_columns
+
 
 schema = ''
 
@@ -129,6 +154,7 @@ class MainWidget(QtWidgets.QWidget):
         self.buttonCreateColumn = QtWidgets.QPushButton("Создать колонку в таблице")
         self.buttonCreateData = QtWidgets.QPushButton("Внести запись в таблицу")
         self.buttonDropTable = QtWidgets.QPushButton("Удалить таблицу")
+        self.buttonDataViewer = QtWidgets.QPushButton("Вывести данные на экран")
         # Добавление кнопок на главный экран
         self.layout.addWidget(self.buttonSetSchema)
         self.layout.addWidget(self.buttonCreateUser)
@@ -139,6 +165,7 @@ class MainWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.buttonCreateEnum)
         self.layout.addWidget(self.buttonCreateData)
         self.layout.addWidget(self.buttonDropTable)
+        self.layout.addWidget(self.buttonDataViewer)
         # Сигналы кнопок
         self.buttonCreateEnum.clicked.connect(lambda: self.openWindow(CreateEnum()))
         self.buttonCreateColumn.clicked.connect(lambda: self.openWindow(CreateColumn()))
@@ -148,6 +175,7 @@ class MainWidget(QtWidgets.QWidget):
         self.buttonCreateData.clicked.connect(lambda: self.openWindow(CreateData()))
         self.buttonDropTable.clicked.connect(lambda: self.openWindow(DropTable()))
         self.buttonCreateTable.clicked.connect(lambda: self.openWindow(CreateTable()))
+        self.buttonDataViewer.clicked.connect(lambda: self.openWindow(DataViewer()))
         #self.setEnabledButton()
         #self.warning()
 
@@ -821,4 +849,91 @@ class CreateUser(QtWidgets.QDialog):
 
 
 class DataViewer(QtWidgets.QDialog):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Конструктор SELECT-запроса")
+        self.resize(800, 600)
+        layout = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+        form.addRow("Рабочая схема", QtWidgets.QLabel(schema))
+        # --- Панель параметров ---
+        self.nameTable = QtWidgets.QComboBox(self)
+        tables = list_tables()
+        if tables:
+            self.nameTable.addItems(tables)
+        else:
+            self.nameTable.addItem("Нет доступных таблиц")
+
+        self.nameColumns = QtWidgets.QComboBox()
+        self.where_edit = QtWidgets.QLineEdit()
+        self.groupby_edit = QtWidgets.QLineEdit()
+        self.having_edit = QtWidgets.QLineEdit()
+        self.orderby_edit = QtWidgets.QLineEdit()
+
+        form.addRow("Таблица:", self.nameTable)
+        form.addRow("Столбцы:", self.nameColumns)
+        form.addRow("WHERE:", self.where_edit)
+        form.addRow("GROUP BY:", self.groupby_edit)
+        form.addRow("HAVING:", self.having_edit)
+        form.addRow("ORDER BY:", self.orderby_edit)
+
+        layout.addLayout(form)
+
+        self.run_button = QtWidgets.QPushButton("Выполнить запрос")
+        layout.addWidget(self.run_button)
+
+        # --- Таблица вывода ---
+        self.result_view = QtWidgets.QTableWidget()
+        layout.addWidget(self.result_view)
+
+        self.run_button.clicked.connect(self.runQuery)
+        self.nameTable.currentTextChanged.connect(self.updateColumn)
+
+    def updateColumn(self):
+        table_name = self.nameTable.currentText()
+        if table_name in ("Не выбрано", "Нет доступных таблиц", ""):
+            self.nameColumns.clear()
+            return
+
+        columns = list_column(table_name)
+        self.nameColumns.clear()
+        self.nameColumns.addItems(columns)
+    def runQuery(self):
+        query = self.buildQuery()
+        print(query)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+                headers = [desc[0] for desc in cursor.description]
+
+            # Отображаем результат
+            self.result_view.setColumnCount(len(headers))
+            self.result_view.setRowCount(len(rows))
+            self.result_view.setHorizontalHeaderLabels(headers)
+
+            for i, row in enumerate(rows):
+                for j, val in enumerate(row):
+                    self.result_view.setItem(i, j, QtWidgets.QTableWidgetItem(str(val)))
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка", str(e))
+
+    def buildQuery(self):
+        table = self.nameTable.text().strip()
+        columns = self.nameColumns.text().strip()
+        where = self.where_edit.text().strip()
+        group_by = self.groupby_edit.text().strip()
+        having = self.having_edit.text().strip()
+        order_by = self.orderby_edit.text().strip()
+
+        query = f"SELECT {schema}.{columns or '*'} FROM {table}"
+        if where:
+            query += f" WHERE {where}"
+        if group_by:
+            query += f" GROUP BY {group_by}"
+        if having:
+            query += f" HAVING {having}"
+        if order_by:
+            query += f" ORDER BY {order_by}"
+        return query + ";"
