@@ -105,6 +105,7 @@ def list_enum():
         logger.exception('Ошибка при получении списка пользовательских типов',e)
     return list_enum
 
+
 def list_column(table_name):
     list_columns = ["Не выбрано"]
     try:
@@ -538,10 +539,6 @@ ORDER BY role_name desc;
         return list_user
 
 
-
-from PySide6 import QtWidgets, QtCore
-import psycopg2
-
 class CreateData(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -709,8 +706,6 @@ class CreateData(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Ошибка", f"Не удалось вставить данные:\n{e}")
 
 
-
-
 class DropTable(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
@@ -852,55 +847,539 @@ class DataViewer(QtWidgets.QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Конструктор SELECT-запроса")
-        self.resize(800, 600)
-        layout = QtWidgets.QVBoxLayout(self)
+        self.resize(1000, 700)
+
+        # МОДЕЛЬ
+        self.selected_columns = []          # для SELECT
+        self.where_conditions = []          # [{'logic': 'AND'|'OR', 'col_expr': 'col', 'op': '=', 'value_sql': '...'}]
+        self.groupby_columns = []           # ['col1', 'col2', ...]
+        self.having_conditions = []         # как where, но col_expr может быть FUNC(col) или COUNT(*)
+        self.orderby_items = []             # [{'col': 'col', 'dir': 'ASC'|'DESC'}]
+        self._updating_columns = False      # технический флаг при обновлении списков
+
+        # КОРНЕВОЙ ЛЕЙАУТ
+        root_layout = QtWidgets.QVBoxLayout(self)
+
+        # ФОРМА ВЕРХНЕЙ ПАНЕЛИ
         form = QtWidgets.QFormLayout()
-        form.addRow("Рабочая схема", QtWidgets.QLabel(schema))
-        # --- Панель параметров ---
+        form.addRow("Рабочая схема:", QtWidgets.QLabel(schema))
+
+        # ТАБЛИЦА
         self.nameTable = QtWidgets.QComboBox(self)
         tables = list_tables()
         if tables:
             self.nameTable.addItems(tables)
         else:
             self.nameTable.addItem("Нет доступных таблиц")
-
-        self.nameColumns = QtWidgets.QComboBox()
-        self.where_edit = QtWidgets.QLineEdit()
-        self.groupby_edit = QtWidgets.QLineEdit()
-        self.having_edit = QtWidgets.QLineEdit()
-        self.orderby_edit = QtWidgets.QLineEdit()
-
         form.addRow("Таблица:", self.nameTable)
-        form.addRow("Столбцы:", self.nameColumns)
-        form.addRow("WHERE:", self.where_edit)
-        form.addRow("GROUP BY:", self.groupby_edit)
-        form.addRow("HAVING:", self.having_edit)
-        form.addRow("ORDER BY:", self.orderby_edit)
 
-        layout.addLayout(form)
+        # SELECT: выбор колонок
+        self.nameColumns = QtWidgets.QComboBox()
+        form.addRow("Столбцы для SELECT:", self.nameColumns)
 
+        # Контейнер для отображения выбранных колонок (SELECT)
+        self.selected_list_layout = QtWidgets.QVBoxLayout()
+        self.selected_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.selected_list_layout.setSpacing(4)
+        selected_container = QtWidgets.QWidget(self)
+        selected_container.setLayout(self.selected_list_layout)
+        form.addRow("Выбранные столбцы:", selected_container)
+
+        # WHERE: конструктор условий
+        where_block = self._build_where_block()
+        form.addRow("WHERE:", where_block)
+
+        # GROUP BY: выбор колонок
+        groupby_block = self._build_groupby_block()
+        form.addRow("GROUP BY:", groupby_block)
+
+        # HAVING: конструктор условий с агрегатами
+        having_block = self._build_having_block()
+        form.addRow("HAVING:", having_block)
+
+        # ORDER BY: выбор колонок и направления
+        orderby_block = self._build_orderby_block()
+        form.addRow("ORDER BY:", orderby_block)
+
+        root_layout.addLayout(form)
+
+        # Кнопка выполнения
         self.run_button = QtWidgets.QPushButton("Выполнить запрос")
-        layout.addWidget(self.run_button)
+        root_layout.addWidget(self.run_button)
 
-        # --- Таблица вывода ---
+        # Таблица результата
         self.result_view = QtWidgets.QTableWidget()
-        layout.addWidget(self.result_view)
+        root_layout.addWidget(self.result_view)
 
+        # СИГНАЛЫ
         self.run_button.clicked.connect(self.runQuery)
-        self.nameTable.currentTextChanged.connect(self.updateColumn)
+        self.nameTable.currentTextChanged.connect(self.updateColumn)  # обновляет все выпадающие по колонкам
+        self.nameColumns.currentTextChanged.connect(self.addColumn)    # подтверждение и добавление в SELECT
+
+        # Инициализация списков колонок для выбранной таблицы
+        self.updateColumn()
+
+    # -------------------------- UI BUILDERS --------------------------
+
+    def _build_where_block(self):
+        block = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(block)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        # строка выбора колонки
+        row_top = QtWidgets.QHBoxLayout()
+        self.where_col_combo = QtWidgets.QComboBox(block)
+        row_top.addWidget(QtWidgets.QLabel("Колонка:"))
+        row_top.addWidget(self.where_col_combo, 1)
+
+        # группа операторов
+        row_ops = QtWidgets.QHBoxLayout()
+        row_ops.addWidget(QtWidgets.QLabel("Оператор:"))
+        self.where_op_group = QtWidgets.QButtonGroup(block)
+        self.where_op_group.setExclusive(True)
+        self.where_ops_buttons = []
+        for text in ["=", "<>", ">=", "<=", ">", "<"]:
+            btn = QtWidgets.QPushButton(text, block)
+            btn.setCheckable(True)
+            self.where_op_group.addButton(btn)
+            self.where_ops_buttons.append(btn)
+            row_ops.addWidget(btn)
+        # по умолчанию "="
+        self.where_ops_buttons[0].setChecked(True)
+
+        # значение и логика AND/OR
+        row_val = QtWidgets.QHBoxLayout()
+        self.where_value_edit = QtWidgets.QLineEdit(block)
+        self.where_value_edit.setPlaceholderText("Значение (число/NULL/TRUE/FALSE или текст)")
+        self.where_logic_combo = QtWidgets.QComboBox(block)
+        self.where_logic_combo.addItems(["AND", "OR"])
+        self.where_add_btn = QtWidgets.QPushButton("Добавить условие", block)
+        row_val.addWidget(QtWidgets.QLabel("Значение:"))
+        row_val.addWidget(self.where_value_edit, 1)
+        row_val.addWidget(QtWidgets.QLabel("Связка:"))
+        row_val.addWidget(self.where_logic_combo)
+        row_val.addWidget(self.where_add_btn)
+
+        # список добавленных условий
+        self.where_list_layout = QtWidgets.QVBoxLayout()
+        self.where_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.where_list_layout.setSpacing(4)
+        where_list_container = QtWidgets.QWidget(block)
+        where_list_container.setLayout(self.where_list_layout)
+
+        v.addLayout(row_top)
+        v.addLayout(row_ops)
+        v.addLayout(row_val)
+        v.addWidget(where_list_container)
+
+        self.where_add_btn.clicked.connect(self._on_add_where_condition)
+
+        return block
+
+    def _build_groupby_block(self):
+        block = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(block)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        row = QtWidgets.QHBoxLayout()
+        self.groupby_col_combo = QtWidgets.QComboBox(block)
+        self.groupby_add_btn = QtWidgets.QPushButton("Добавить", block)
+        row.addWidget(QtWidgets.QLabel("Колонка:"))
+        row.addWidget(self.groupby_col_combo, 1)
+        row.addWidget(self.groupby_add_btn)
+
+        self.groupby_list_layout = QtWidgets.QVBoxLayout()
+        self.groupby_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.groupby_list_layout.setSpacing(4)
+        container = QtWidgets.QWidget(block)
+        container.setLayout(self.groupby_list_layout)
+
+        v.addLayout(row)
+        v.addWidget(container)
+
+        self.groupby_add_btn.clicked.connect(self._on_add_groupby)
+
+        return block
+
+    def _build_having_block(self):
+        block = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(block)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        # Выбор выражения: агрегат + колонка
+        row_expr = QtWidgets.QHBoxLayout()
+        self.having_func_combo = QtWidgets.QComboBox(block)
+        # Возможные агрегаты; предусмотрим COUNT(*)
+        self.having_func_combo.addItems(["", "COUNT", "COUNT(*)", "SUM", "AVG", "MIN", "MAX"])
+        self.having_col_combo = QtWidgets.QComboBox(block)
+        row_expr.addWidget(QtWidgets.QLabel("Функция:"))
+        row_expr.addWidget(self.having_func_combo)
+        row_expr.addWidget(QtWidgets.QLabel("Колонка:"))
+        row_expr.addWidget(self.having_col_combo, 1)
+
+        # Операторы
+        row_ops = QtWidgets.QHBoxLayout()
+        row_ops.addWidget(QtWidgets.QLabel("Оператор:"))
+        self.having_op_group = QtWidgets.QButtonGroup(block)
+        self.having_op_group.setExclusive(True)
+        self.having_ops_buttons = []
+        for text in ["=", "<>", ">=", "<=", ">", "<"]:
+            btn = QtWidgets.QPushButton(text, block)
+            btn.setCheckable(True)
+            self.having_op_group.addButton(btn)
+            self.having_ops_buttons.append(btn)
+            row_ops.addWidget(btn)
+        self.having_ops_buttons[0].setChecked(True)
+
+        # Значение + логика
+        row_val = QtWidgets.QHBoxLayout()
+        self.having_value_edit = QtWidgets.QLineEdit(block)
+        self.having_value_edit.setPlaceholderText("Значение (число/NULL/TRUE/FALSE или текст)")
+        self.having_logic_combo = QtWidgets.QComboBox(block)
+        self.having_logic_combo.addItems(["AND", "OR"])
+        self.having_add_btn = QtWidgets.QPushButton("Добавить условие", block)
+        row_val.addWidget(QtWidgets.QLabel("Значение:"))
+        row_val.addWidget(self.having_value_edit, 1)
+        row_val.addWidget(QtWidgets.QLabel("Связка:"))
+        row_val.addWidget(self.having_logic_combo)
+        row_val.addWidget(self.having_add_btn)
+
+        # Список условий HAVING
+        self.having_list_layout = QtWidgets.QVBoxLayout()
+        self.having_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.having_list_layout.setSpacing(4)
+        having_list_container = QtWidgets.QWidget(block)
+        having_list_container.setLayout(self.having_list_layout)
+
+        v.addLayout(row_expr)
+        v.addLayout(row_ops)
+        v.addLayout(row_val)
+        v.addWidget(having_list_container)
+
+        self.having_add_btn.clicked.connect(self._on_add_having_condition)
+
+        return block
+
+    def _build_orderby_block(self):
+        block = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(block)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        row = QtWidgets.QHBoxLayout()
+        self.orderby_col_combo = QtWidgets.QComboBox(block)
+        self.orderby_dir_combo = QtWidgets.QComboBox(block)
+        self.orderby_dir_combo.addItems(["ASC", "DESC"])
+        self.orderby_add_btn = QtWidgets.QPushButton("Добавить", block)
+        row.addWidget(QtWidgets.QLabel("Колонка:"))
+        row.addWidget(self.orderby_col_combo, 1)
+        row.addWidget(QtWidgets.QLabel("Направление:"))
+        row.addWidget(self.orderby_dir_combo)
+        row.addWidget(self.orderby_add_btn)
+
+        self.orderby_list_layout = QtWidgets.QVBoxLayout()
+        self.orderby_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.orderby_list_layout.setSpacing(4)
+        container = QtWidgets.QWidget(block)
+        container.setLayout(self.orderby_list_layout)
+
+        v.addLayout(row)
+        v.addWidget(container)
+
+        self.orderby_add_btn.clicked.connect(self._on_add_orderby)
+
+        return block
+
+    # -------------------------- ДЕЙСТВИЯ SELECT --------------------------
+
+    def addColumn(self):
+        # игнорируем событие, если сейчас идёт программное заполнение комбобокса
+        if getattr(self, "_updating_columns", False):
+            return
+
+        col = self.nameColumns.currentText().strip()
+        if not col:
+            return
+
+        # подтверждение выбора
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Подтверждение",
+            f"Добавить столбец «{col}» в выборку?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        # проверка на дубликат
+        if col in self.selected_columns:
+            QtWidgets.QMessageBox.information(self, "Уже добавлено",
+                                              f"Столбец «{col}» уже в списке.")
+            return
+
+        # добавляем в список
+        self.selected_columns.append(col)
+
+        # создаём виджет-строку: [QLabel(col)] [stretch] [Удалить]
+        row_widget = QtWidgets.QWidget(self)
+        h = QtWidgets.QHBoxLayout(row_widget)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+
+        lbl = QtWidgets.QLabel(col, row_widget)
+        btn = QtWidgets.QPushButton("Удалить", row_widget)
+        btn.setToolTip(f"Удалить столбец «{col}»")
+
+        # обработчик удаления конкретно этой строки
+        def remove_this_row():
+            if col in self.selected_columns:
+                self.selected_columns.remove(col)
+            row_widget.setParent(None)
+            row_widget.deleteLater()
+
+        btn.clicked.connect(remove_this_row)
+
+        h.addWidget(lbl)
+        h.addStretch(1)
+        h.addWidget(btn)
+
+        self.selected_list_layout.addWidget(row_widget)
+
+    # -------------------------- ДЕЙСТВИЯ WHERE --------------------------
+
+    def _on_add_where_condition(self):
+        col = self.where_col_combo.currentText().strip()
+        if not col:
+            return
+
+        op_btn = self._checked_button(self.where_op_group)
+        op = op_btn.text() if op_btn else "="
+        value_raw = self.where_value_edit.text()
+        if value_raw.strip() == "":
+            QtWidgets.QMessageBox.information(self, "Пустое значение", "Введите значение для условия WHERE.")
+            return
+
+        value_sql = self._to_sql_literal(value_raw)
+        logic = self.where_logic_combo.currentText()
+
+        item = {
+            "logic": logic,
+            "col_expr": col,
+            "op": op,
+            "value_sql": value_sql,
+        }
+        self.where_conditions.append(item)
+
+        text = f"{logic if len(self.where_conditions) > 1 else ''} {col} {op} {value_sql}".strip()
+        self._add_list_row(self.where_list_layout, text, lambda: self._remove_condition(self.where_conditions, item))
+
+        # очистка поля значения для удобства
+        self.where_value_edit.clear()
+
+    # -------------------------- ДЕЙСТВИЯ GROUP BY --------------------------
+
+    def _on_add_groupby(self):
+        col = self.groupby_col_combo.currentText().strip()
+        if not col:
+            return
+        if col in self.groupby_columns:
+            QtWidgets.QMessageBox.information(self, "Уже добавлено", f"Колонка «{col}» уже в GROUP BY.")
+            return
+
+        self.groupby_columns.append(col)
+        self._add_list_row(self.groupby_list_layout, col, lambda: self._remove_groupby(col))
+
+    # -------------------------- ДЕЙСТВИЯ HAVING --------------------------
+
+    def _on_add_having_condition(self):
+        func = self.having_func_combo.currentText()
+        col = self.having_col_combo.currentText().strip()
+
+        # формируем выражение
+        if func == "COUNT(*)":
+            col_expr = "COUNT(*)"
+        elif func:
+            if not col:
+                QtWidgets.QMessageBox.information(self, "Не выбрана колонка", "Выберите колонку для агрегатной функции.")
+                return
+            col_expr = f"{func}({col})"
+        else:
+            if not col:
+                QtWidgets.QMessageBox.information(self, "Не выбрана колонка", "Выберите колонку для HAVING.")
+                return
+            col_expr = col
+
+        op_btn = self._checked_button(self.having_op_group)
+        op = op_btn.text() if op_btn else "="
+        value_raw = self.having_value_edit.text()
+        if value_raw.strip() == "":
+            QtWidgets.QMessageBox.information(self, "Пустое значение", "Введите значение для условия HAVING.")
+            return
+        value_sql = self._to_sql_literal(value_raw)
+        logic = self.having_logic_combo.currentText()
+
+        item = {
+            "logic": logic,
+            "col_expr": col_expr,
+            "op": op,
+            "value_sql": value_sql,
+        }
+        self.having_conditions.append(item)
+
+        text = f"{logic if len(self.having_conditions) > 1 else ''} {col_expr} {op} {value_sql}".strip()
+        self._add_list_row(self.having_list_layout, text, lambda: self._remove_condition(self.having_conditions, item))
+
+        self.having_value_edit.clear()
+
+    # -------------------------- ДЕЙСТВИЯ ORDER BY --------------------------
+
+    def _on_add_orderby(self):
+        col = self.orderby_col_combo.currentText().strip()
+        if not col:
+            return
+        direction = self.orderby_dir_combo.currentText()
+        item = {"col": col, "dir": direction}
+
+        # проверим на дубликат одинаковой колонки с тем же направлением
+        if any(x["col"] == item["col"] and x["dir"] == item["dir"] for x in self.orderby_items):
+            QtWidgets.QMessageBox.information(self, "Уже добавлено", f"{col} {direction} уже в ORDER BY.")
+            return
+
+        self.orderby_items.append(item)
+        text = f"{col} {direction}"
+        self._add_list_row(self.orderby_list_layout, text, lambda: self._remove_orderby(item))
+
+    # -------------------------- ВСПОМОГАТЕЛЬНЫЕ UI-МЕТОДЫ --------------------------
+
+    def _add_list_row(self, layout: QtWidgets.QVBoxLayout, text: str, on_remove):
+        row_widget = QtWidgets.QWidget(self)
+        h = QtWidgets.QHBoxLayout(row_widget)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+
+        lbl = QtWidgets.QLabel(text, row_widget)
+        btn = QtWidgets.QPushButton("Удалить", row_widget)
+        btn.clicked.connect(lambda: self._remove_row(row_widget, on_remove))
+
+        h.addWidget(lbl)
+        h.addStretch(1)
+        h.addWidget(btn)
+
+        layout.addWidget(row_widget)
+
+    def _remove_row(self, row_widget: QtWidgets.QWidget, on_remove):
+        # сначала логическая модель
+        try:
+            on_remove()
+        finally:
+            # затем UI
+            row_widget.setParent(None)
+            row_widget.deleteLater()
+
+    def _remove_condition(self, container_list: list, item: dict):
+        if item in container_list:
+            container_list.remove(item)
+
+    def _remove_groupby(self, col: str):
+        try:
+            self.groupby_columns.remove(col)
+        except ValueError:
+            pass
+
+    def _remove_orderby(self, item: dict):
+        try:
+            self.orderby_items.remove(item)
+        except ValueError:
+            pass
+
+    def _checked_button(self, group: QtWidgets.QButtonGroup):
+        for btn in group.buttons():
+            if btn.isChecked():
+                return btn
+        return None
+
+    def _to_sql_literal(self, value: str) -> str:
+        s = value.strip()
+        u = s.upper()
+        if u == "NULL":
+            return "NULL"
+        if u in ("TRUE", "FALSE"):
+            return u
+        # число (целое/вещественное)
+        try:
+            int(s)
+            return s
+        except ValueError:
+            pass
+        try:
+            float(s)
+            return s
+        except ValueError:
+            pass
+        # строка — экранируем одинарные кавычки
+        s_escaped = s.replace("'", "''")
+        return f"'{s_escaped}'"
+
+    def _clear_layout(self, layout: QtWidgets.QVBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    # -------------------------- ОБНОВЛЕНИЕ КОЛОНОК ПРИ СМЕНЕ ТАБЛИЦЫ --------------------------
 
     def updateColumn(self):
         table_name = self.nameTable.currentText()
-        if table_name in ("Не выбрано", "Нет доступных таблиц", ""):
-            self.nameColumns.clear()
-            return
+        self._updating_columns = True
+        try:
+            # очистим все модельные списки и UI, т.к. колонок может не быть в новой таблице
+            self.selected_columns.clear()
+            self.where_conditions.clear()
+            self.groupby_columns.clear()
+            self.having_conditions.clear()
+            self.orderby_items.clear()
+            self._clear_layout(self.selected_list_layout)
+            self._clear_layout(self.where_list_layout)
+            self._clear_layout(self.groupby_list_layout)
+            self._clear_layout(self.having_list_layout)
+            self._clear_layout(self.orderby_list_layout)
 
-        columns = list_column(table_name)
-        self.nameColumns.clear()
-        self.nameColumns.addItems(columns)
+            # обновим все выпадающие списки по колонкам
+            if table_name in ("Не выбрано", "Нет доступных таблиц", "", None):
+                self.nameColumns.clear()
+                self.where_col_combo.clear()
+                self.groupby_col_combo.clear()
+                self.having_col_combo.clear()
+                self.orderby_col_combo.clear()
+                return
+
+            columns = list_column(table_name) or []
+
+            def refill(cb: QtWidgets.QComboBox, items):
+                cb.blockSignals(True)
+                cb.clear()
+                if items:
+                    cb.addItems(items)
+                cb.blockSignals(False)
+
+            refill(self.nameColumns, columns)
+            refill(self.where_col_combo, columns)
+            refill(self.groupby_col_combo, columns)
+            refill(self.having_col_combo, columns)
+            refill(self.orderby_col_combo, columns)
+        finally:
+            self._updating_columns = False
+
+    # -------------------------- ВЫПОЛНЕНИЕ ЗАПРОСА --------------------------
+
     def runQuery(self):
         query = self.buildQuery()
-        print(query)
         try:
             with connection.cursor() as cursor:
                 cursor.execute(query)
@@ -915,25 +1394,49 @@ class DataViewer(QtWidgets.QDialog):
             for i, row in enumerate(rows):
                 for j, val in enumerate(row):
                     self.result_view.setItem(i, j, QtWidgets.QTableWidgetItem(str(val)))
-
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Ошибка", str(e))
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"{e}\n\nSQL:\n{query}")
 
     def buildQuery(self):
-        table = self.nameTable.text().strip()
-        columns = self.nameColumns.text().strip()
-        where = self.where_edit.text().strip()
-        group_by = self.groupby_edit.text().strip()
-        having = self.having_edit.text().strip()
-        order_by = self.orderby_edit.text().strip()
+        table = self.nameTable.currentText().strip()
+        if not table or table in ("Не выбрано", "Нет доступных таблиц"):
+            raise ValueError("Не выбрана таблица.")
 
-        query = f"SELECT {schema}.{columns or '*'} FROM {table}"
-        if where:
-            query += f" WHERE {where}"
-        if group_by:
-            query += f" GROUP BY {group_by}"
-        if having:
-            query += f" HAVING {having}"
-        if order_by:
-            query += f" ORDER BY {order_by}"
+        columns = ", ".join(self.selected_columns) if self.selected_columns else "*"
+
+        query = f"SELECT {columns} FROM {schema}.{table}"
+
+        # WHERE
+        if self.where_conditions:
+            where_sql = self._conditions_to_sql(self.where_conditions)
+            if where_sql:
+                query += f" WHERE {where_sql}"
+
+        # GROUP BY
+        if self.groupby_columns:
+            query += " GROUP BY " + ", ".join(self.groupby_columns)
+
+        # HAVING
+        if self.having_conditions:
+            having_sql = self._conditions_to_sql(self.having_conditions)
+            if having_sql:
+                query += f" HAVING {having_sql}"
+
+        # ORDER BY
+        if self.orderby_items:
+            parts = [f"{x['col']} {x['dir']}" for x in self.orderby_items]
+            query += " ORDER BY " + ", ".join(parts)
+
         return query + ";"
+
+    def _conditions_to_sql(self, conds: list) -> str:
+        if not conds:
+            return ""
+        parts = []
+        for i, c in enumerate(conds):
+            seg = f"{c['col_expr']} {c['op']} {c['value_sql']}"
+            if i == 0:
+                parts.append(seg)
+            else:
+                parts.append(f"{c['logic']} {seg}")
+        return " ".join(parts)
